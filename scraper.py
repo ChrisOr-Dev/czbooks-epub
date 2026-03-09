@@ -125,12 +125,37 @@ class Scraper:
         title_tag = soup.select_one("h1.title, .book-title h1, h1")
         if title_tag:
             title = title_tag.get_text(strip=True)
+        if not title:
+            # Fallback: extract from <title> tag, pattern 《書名》
+            page_title = soup.title.get_text(strip=True) if soup.title else ""
+            import re as _re
+            m = _re.search(r"《(.+?)》", page_title)
+            if m:
+                title = m.group(1)
+        if not title:
+            # Fallback: meta title
+            meta_title = soup.find("meta", {"name": "title"})
+            if meta_title:
+                m = _re.search(r"《(.+?)》", meta_title.get("content", ""))
+                if m:
+                    title = m.group(1)
 
         # --- author ---
         author = "Unknown"
         author_tag = soup.select_one(".author a, .book-author a, span.author")
         if author_tag:
             author = author_tag.get_text(strip=True)
+        if author == "Unknown":
+            # Fallback: any element containing 作者
+            for tag in soup.find_all(string=lambda t: t and "作者" in t):
+                import re as _re
+                m = _re.search(r"作者[：:]\s*(.+)", tag.strip())
+                if m:
+                    author = m.group(1).strip()
+                    break
+        # Strip "作者:" prefix if present
+        import re as _re
+        author = _re.sub(r"^作者[：:]\s*", "", author)
 
         # --- chapters ---
         chapters = []
@@ -149,7 +174,12 @@ class Scraper:
             if href.rstrip("/") == url.rstrip("/"):
                 continue
             seen.add(href)
-            full_url = href if href.startswith("http") else "https://czbooks.net" + href
+            if href.startswith("http"):
+                full_url = href
+            elif href.startswith("//"):
+                full_url = "https:" + href
+            else:
+                full_url = "https://czbooks.net" + href
             chapters.append(Chapter(title=a.get_text(strip=True), url=full_url))
 
         logger.info(f"Found novel: 《{title}》 by {author}, {len(chapters)} chapters")
