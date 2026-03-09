@@ -39,13 +39,19 @@ def parse_chapter_range(spec: str, total: int) -> tuple[int, int]:
     return start, end
 
 
+_progress_counter = 0
+
 def progress_bar(current: int, total: int, title: str):
+    # concurrent callbacks arrive out-of-order; track completed count
+    global _progress_counter
+    _progress_counter += 1
+    done = _progress_counter
     bar_width = 30
-    filled = int(bar_width * current / total)
+    filled = int(bar_width * done / total)
     bar = "█" * filled + "░" * (bar_width - filled)
-    pct = current / total * 100
-    print(f"\r[{bar}] {pct:5.1f}%  {current}/{total}  {title[:30]}", end="", flush=True)
-    if current == total:
+    pct = done / total * 100
+    print(f"\r[{bar}] {pct:5.1f}%  {done}/{total}  {title[:30]}", end="", flush=True)
+    if done == total:
         print()
 
 
@@ -68,15 +74,17 @@ def main():
         help="Dump raw HTML of chapter N for debugging",
     )
     parser.add_argument(
-        "--playwright",
-        action="store_true",
-        help="Force playwright mode (skip requests attempt)",
+        "--concurrency",
+        type=int,
+        default=5,
+        metavar="N",
+        help="Parallel browser pages (default: 5, max recommended: 10)",
     )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
     setup_logging(args.verbose)
-    scraper = Scraper()
+    scraper = Scraper(concurrency=args.concurrency)
 
     # --test-chapter: dump raw HTML
     if args.test_chapter is not None:

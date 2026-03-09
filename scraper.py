@@ -1,11 +1,13 @@
 """
-czbooks.net scraper — handles 403 bypass via browser headers or playwright fallback.
+czbooks.net scraper — async playwright with persistent browser + concurrent pages.
 """
-import time
-import random
+import asyncio
 import logging
+import random
+import re
+import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
 import requests
 from bs4 import BeautifulSoup
@@ -18,12 +20,11 @@ HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/120.0.0.0 Safari/537.36"
     ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
+    "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8",
+    "Referer": "https://czbooks.net/",
 }
+
+BASE_URL = "https://czbooks.net"
 
 
 @dataclass
@@ -38,208 +39,226 @@ class Novel:
     title: str
     author: str
     url: str
-    chapters: list[Chapter] = field(default_factory=list)
+    chapters: list = field(default_factory=list)  # list[Chapter]
 
+
+# ---------------------------------------------------------------------------
+# HTML parsing helpers (shared between sync index fetch + async chapter fetch)
+# ---------------------------------------------------------------------------
+
+def _normalize_url(href: str) -> str:
+    if href.startswith("http"):
+        return href
+    if href.startswith("//"):
+        return "https:" + href
+    return BASE_URL + href
+
+
+def _parse_index_html(html: str, url: str) -> Optional[Novel]:
+    soup = BeautifulSoup(html, "html.parser")
+
+    # title
+    title = ""
+    h1 = soup.select_one("h1.title, .book-title h1, h1")
+    if h1:
+        title = h1.get_text(strip=True)
+    if not title:
+        page_title = soup.title.get_text(strip=True) if soup.title else ""
+        m = re.search(r"《(.+?)》", page_title)
+        if m:
+            title = m.group(1)
+
+    # author
+    author = "Unknown"
+    author_tag = soup.select_one(".author a, .book-author a, span.author")
+    if author_tag:
+        author = re.sub(r"^作者[：:]\s*", "", author_tag.get_text(strip=True))
+    if author == "Unknown":
+        for text in soup.find_all(string=lambda t: t and "作者" in t):
+            m = re.search(r"作者[：:]\s*(.+)", text.strip())
+            if m:
+                author = m.group(1).strip()
+                break
+
+    # chapters
+    chapter_links = soup.select(".chapter-list a, ul.chapter a, .chapterList a, #chapter-list a")
+    if not chapter_links:
+        chapter_links = soup.select("a[href*='/n/']")
+
+    seen: set = set()
+    chapters = []
+    for a in chapter_links:
+        href = a.get("href", "")
+        if not href or href in seen or href.rstrip("/") == url.rstrip("/"):
+            continue
+        seen.add(href)
+        chapters.append(Chapter(title=a.get_text(strip=True), url=_normalize_url(href)))
+
+    logger.info(f"Found novel: 《{title}》 by {author}, {len(chapters)} chapters")
+    return Novel(title=title, author=author, url=url, chapters=chapters)
+
+
+def _extract_content(html: str, url: str) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup.select("script,style,.ad,.advertisement,nav,.chapter-nav,.pagination,header,footer"):
+        tag.decompose()
+
+    content_tag = (
+        soup.select_one(".chapter-content")
+        or soup.select_one("#chapter-content")
+        or soup.select_one(".content")
+        or soup.select_one("article")
+        or soup.select_one(".novel-content")
+    )
+    if content_tag:
+        # Try <p> tags first
+        paras = [p.get_text(strip=True) for p in content_tag.find_all("p")]
+        if paras:
+            return "\n\n".join(p for p in paras if p)
+        # Fallback: split by <br> tags
+        for br in content_tag.find_all("br"):
+            br.replace_with("\n")
+        lines = [ln.strip() for ln in content_tag.get_text(separator="\n").splitlines()]
+        lines = [ln for ln in lines if ln]
+        if lines:
+            return "\n\n".join(lines)
+        return content_tag.get_text(separator="\n", strip=True)
+
+    logger.warning(f"No content selector matched: {url}")
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# Async scraper — persistent browser, concurrent pages
+# ---------------------------------------------------------------------------
 
 class Scraper:
-    def __init__(self, delay_min: float = 0.5, delay_max: float = 1.5, max_retries: int = 3):
-        self.delay_min = delay_min
-        self.delay_max = delay_max
-        self.max_retries = max_retries
-        self.session = requests.Session()
-        self.session.headers.update(HEADERS)
-        self._playwright_browser = None
+    """
+    Async playwright scraper.
 
-    def _sleep(self):
-        time.sleep(random.uniform(self.delay_min, self.delay_max))
+    Usage:
+        scraper = Scraper(concurrency=5)
+        novel = scraper.parse_novel_index(url)   # sync, playwright one-shot
+        scraper.fetch_chapters(novel, start, end, callback)  # async internally
+    """
 
-    def _fetch_requests(self, url: str) -> Optional[str]:
-        """Fetch page with requests, return HTML or None on failure."""
-        self.session.headers["Referer"] = "https://czbooks.net/"
-        for attempt in range(self.max_retries):
-            try:
-                resp = self.session.get(url, timeout=15)
-                if resp.status_code == 200:
-                    return resp.text
-                if resp.status_code == 403:
-                    logger.warning(f"403 on {url}, attempt {attempt+1}")
-                    if attempt < self.max_retries - 1:
-                        self._sleep()
-                    continue
-                logger.warning(f"HTTP {resp.status_code} on {url}")
-            except Exception as e:
-                logger.warning(f"Request error on {url}: {e}")
-                if attempt < self.max_retries - 1:
-                    self._sleep()
-        return None
+    def __init__(self, concurrency: int = 5, page_timeout: int = 20000):
+        self.concurrency = concurrency
+        self.page_timeout = page_timeout  # ms
+        # requests session for index page (playwright fallback)
+        self._session = requests.Session()
+        self._session.headers.update(HEADERS)
 
-    def _fetch_playwright(self, url: str) -> Optional[str]:
-        """Fetch page using playwright headless browser."""
-        try:
-            from playwright.sync_api import sync_playwright
-        except ImportError:
-            logger.error("playwright not installed. Run: pip install playwright && playwright install chromium")
-            return None
+    # ------------------------------------------------------------------
+    # Sync: index page (single fetch, playwright if needed)
+    # ------------------------------------------------------------------
 
+    def _fetch_with_playwright_sync(self, url: str) -> Optional[str]:
+        from playwright.sync_api import sync_playwright
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
-                context = browser.new_context(
-                    user_agent=HEADERS["User-Agent"],
-                    locale="zh-TW",
-                )
-                page = context.new_page()
+                ctx = browser.new_context(user_agent=HEADERS["User-Agent"], locale="zh-TW")
+                page = ctx.new_page()
                 page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                # Wait for content to load
-                page.wait_for_timeout(2000)
+                page.wait_for_timeout(1500)
                 html = page.content()
-                # Save cookies back to requests session
-                cookies = context.cookies()
-                for c in cookies:
-                    self.session.cookies.set(c["name"], c["value"], domain=c.get("domain", ""))
                 browser.close()
                 return html
         except Exception as e:
-            logger.error(f"Playwright error on {url}: {e}")
+            logger.error(f"Playwright (sync) error: {e}")
             return None
-
-    def fetch(self, url: str, force_playwright: bool = False) -> Optional[str]:
-        """Fetch URL, fall back to playwright if requests returns 403."""
-        if not force_playwright:
-            html = self._fetch_requests(url)
-            if html:
-                return html
-            logger.info("Falling back to playwright...")
-        return self._fetch_playwright(url)
 
     def parse_novel_index(self, url: str) -> Optional[Novel]:
-        """Parse novel index page, extract title, author, chapter list."""
-        html = self.fetch(url)
+        # Try requests first (unlikely to work but fast check)
+        try:
+            resp = self._session.get(url, timeout=10)
+            if resp.status_code == 200:
+                return _parse_index_html(resp.text, url)
+        except Exception:
+            pass
+
+        logger.info("Fetching index via playwright...")
+        html = self._fetch_with_playwright_sync(url)
         if not html:
             return None
+        return _parse_index_html(html, url)
 
-        soup = BeautifulSoup(html, "html.parser")
+    def dump_raw_html(self, url: str) -> str:
+        try:
+            resp = self._session.get(url, timeout=10)
+            if resp.status_code == 200:
+                return resp.text
+        except Exception:
+            pass
+        return self._fetch_with_playwright_sync(url) or ""
 
-        # --- title ---
-        title = ""
-        title_tag = soup.select_one("h1.title, .book-title h1, h1")
-        if title_tag:
-            title = title_tag.get_text(strip=True)
-        if not title:
-            # Fallback: extract from <title> tag, pattern 《書名》
-            page_title = soup.title.get_text(strip=True) if soup.title else ""
-            import re as _re
-            m = _re.search(r"《(.+?)》", page_title)
-            if m:
-                title = m.group(1)
-        if not title:
-            # Fallback: meta title
-            meta_title = soup.find("meta", {"name": "title"})
-            if meta_title:
-                m = _re.search(r"《(.+?)》", meta_title.get("content", ""))
-                if m:
-                    title = m.group(1)
+    # ------------------------------------------------------------------
+    # Async: chapters — persistent browser, concurrent pages
+    # ------------------------------------------------------------------
 
-        # --- author ---
-        author = "Unknown"
-        author_tag = soup.select_one(".author a, .book-author a, span.author")
-        if author_tag:
-            author = author_tag.get_text(strip=True)
-        if author == "Unknown":
-            # Fallback: any element containing 作者
-            for tag in soup.find_all(string=lambda t: t and "作者" in t):
-                import re as _re
-                m = _re.search(r"作者[：:]\s*(.+)", tag.strip())
-                if m:
-                    author = m.group(1).strip()
-                    break
-        # Strip "作者:" prefix if present
-        import re as _re
-        author = _re.sub(r"^作者[：:]\s*", "", author)
+    async def _fetch_chapter_async(
+        self,
+        chapter: Chapter,
+        context,  # playwright BrowserContext
+        semaphore: asyncio.Semaphore,
+        index: int,
+        total: int,
+        progress_callback: Optional[Callable],
+        delay: float,
+    ) -> None:
+        async with semaphore:
+            # small random delay to avoid hammering the server
+            await asyncio.sleep(random.uniform(0, delay))
+            for attempt in range(2):  # retry once on empty content
+                try:
+                    page = await context.new_page()
+                    await page.goto(chapter.url, wait_until="load", timeout=self.page_timeout)
+                    await page.wait_for_timeout(800 + attempt * 1200)
+                    html = await page.content()
+                    await page.close()
+                    chapter.content = _extract_content(html, chapter.url)
+                    if chapter.content:
+                        break
+                    logger.debug(f"Empty content on attempt {attempt+1}, retrying: {chapter.title}")
+                except Exception as e:
+                    logger.warning(f"Attempt {attempt+1} failed for {chapter.title}: {e}")
+                    chapter.content = ""
+            if progress_callback:
+                progress_callback(index, total, chapter.title)
 
-        # --- chapters ---
-        chapters = []
-        # czbooks uses a chapter list in .chapter-list or similar
-        chapter_links = soup.select(".chapter-list a, ul.chapter a, .chapterList a, #chapter-list a")
-        if not chapter_links:
-            # Broader fallback
-            chapter_links = soup.select("a[href*='/n/']")
+    async def _fetch_all_async(
+        self,
+        chapters: list,
+        progress_callback: Optional[Callable],
+    ) -> None:
+        from playwright.async_api import async_playwright
 
-        seen = set()
-        for a in chapter_links:
-            href = a.get("href", "")
-            if not href or href in seen:
-                continue
-            # Filter out the book index URL itself
-            if href.rstrip("/") == url.rstrip("/"):
-                continue
-            seen.add(href)
-            if href.startswith("http"):
-                full_url = href
-            elif href.startswith("//"):
-                full_url = "https:" + href
-            else:
-                full_url = "https://czbooks.net" + href
-            chapters.append(Chapter(title=a.get_text(strip=True), url=full_url))
+        delay = 0.5  # base jitter delay per worker
+        semaphore = asyncio.Semaphore(self.concurrency)
 
-        logger.info(f"Found novel: 《{title}》 by {author}, {len(chapters)} chapters")
-        return Novel(title=title, author=author, url=url, chapters=chapters)
-
-    def parse_chapter_content(self, chapter: Chapter) -> str:
-        """Fetch and extract chapter text content."""
-        html = self.fetch(chapter.url)
-        if not html:
-            logger.error(f"Failed to fetch chapter: {chapter.title}")
-            return ""
-
-        soup = BeautifulSoup(html, "html.parser")
-
-        # Remove noise elements
-        for tag in soup.select("script, style, .ad, .advertisement, nav, .chapter-nav, .pagination, header, footer"):
-            tag.decompose()
-
-        # Try known content selectors
-        content_tag = (
-            soup.select_one(".chapter-content")
-            or soup.select_one("#chapter-content")
-            or soup.select_one(".content")
-            or soup.select_one("article")
-            or soup.select_one(".novel-content")
-        )
-
-        if content_tag:
-            paragraphs = [p.get_text(strip=True) for p in content_tag.find_all("p")]
-            if paragraphs:
-                return "\n\n".join(p for p in paragraphs if p)
-            # Fallback: raw text
-            return content_tag.get_text(separator="\n", strip=True)
-
-        logger.warning(f"Could not find content selector for {chapter.url}")
-        return ""
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(
+                user_agent=HEADERS["User-Agent"],
+                locale="zh-TW",
+            )
+            total = len(chapters)
+            tasks = [
+                self._fetch_chapter_async(ch, context, semaphore, i + 1, total, progress_callback, delay)
+                for i, ch in enumerate(chapters)
+            ]
+            await asyncio.gather(*tasks)
+            await browser.close()
 
     def fetch_chapters(
         self,
         novel: Novel,
         start: int = 1,
         end: Optional[int] = None,
-        progress_callback=None,
+        progress_callback: Optional[Callable] = None,
     ) -> None:
-        """Fill chapter content in-place. start/end are 1-indexed."""
-        chapters = novel.chapters
         if end is None:
-            end = len(chapters)
-        subset = chapters[start - 1 : end]
-        total = len(subset)
-
-        for i, chapter in enumerate(subset, 1):
-            logger.info(f"[{i}/{total}] Fetching: {chapter.title}")
-            chapter.content = self.parse_chapter_content(chapter)
-            if progress_callback:
-                progress_callback(i, total, chapter.title)
-            if i < total:
-                self._sleep()
-
-    def dump_raw_html(self, url: str) -> str:
-        """Return raw HTML for debugging."""
-        html = self.fetch(url)
-        return html or ""
+            end = len(novel.chapters)
+        subset = novel.chapters[start - 1 : end]
+        asyncio.run(self._fetch_all_async(subset, progress_callback))
