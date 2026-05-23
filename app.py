@@ -41,7 +41,11 @@ MAX_CONCURRENT_JOBS = int(os.environ.get("MAX_CONCURRENT_JOBS", 4))
 PER_JOB_CONCURRENCY = int(os.environ.get("PER_JOB_CONCURRENCY", 10))
 RATE_LIMIT = os.environ.get("RATE_LIMIT", "5 per hour")
 ALLOWED_HOST_SUFFIX = "czbooks.net"
-ALLOWED_COVER_HOST_SUFFIX = "czbooks.net"
+# czbooks serves cover images from several CDNs depending on the book.
+ALLOWED_COVER_HOST_SUFFIXES = (
+    "czbooks.net",
+    "cdnshu.com",
+)
 MAX_JOBS_RETAINED = 50
 
 logging.basicConfig(
@@ -281,7 +285,7 @@ def api_cover_proxy():
     if parsed.scheme not in ("http", "https"):
         return jsonify({"error": "url must be http(s)"}), 400
     host = (parsed.hostname or "").lower()
-    if not (host.endswith(ALLOWED_COVER_HOST_SUFFIX) or host == ALLOWED_COVER_HOST_SUFFIX):
+    if not any(host == s or host.endswith("." + s) for s in ALLOWED_COVER_HOST_SUFFIXES):
         return jsonify({"error": "host not allowed"}), 400
     try:
         upstream = requests.get(url, headers=HEADERS, timeout=15, stream=True)
