@@ -13,10 +13,12 @@ Routes:
   GET  /api/jobs/<id>/events      → SSE stream: status / novel / chapter / done / error
   GET  /healthz                   → health check
 """
+import ipaddress
 import json
 import logging
 import os
 import queue
+import socket
 import threading
 import time
 import uuid
@@ -41,11 +43,7 @@ MAX_CONCURRENT_JOBS = int(os.environ.get("MAX_CONCURRENT_JOBS", 4))
 PER_JOB_CONCURRENCY = int(os.environ.get("PER_JOB_CONCURRENCY", 10))
 RATE_LIMIT = os.environ.get("RATE_LIMIT", "5 per hour")
 ALLOWED_HOST_SUFFIX = "czbooks.net"
-# czbooks serves cover images from several CDNs depending on the book.
-ALLOWED_COVER_HOST_SUFFIXES = (
-    "czbooks.net",
-    "cdnshu.com",
-)
+COVER_MAX_BYTES = 5 * 1024 * 1024
 MAX_JOBS_RETAINED = 50
 
 logging.basicConfig(
@@ -272,6 +270,25 @@ def api_parse():
     })
 
 
+def _resolves_to_public_ip(host: str) -> bool:
+    """Resolve host and verify every address is a public, routable IP.
+    Blocks SSRF to private/loopback/link-local/multicast/reserved ranges."""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return False
+    for info in infos:
+        addr = info[4][0]
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            continue
+        if (ip.is_private or ip.is_loopback or ip.is_link_local or
+                ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            return False
+    return True
+
+
 @app.route("/api/cover-proxy")
 @limiter.limit("60 per hour")
 def api_cover_proxy():
@@ -285,7 +302,9 @@ def api_cover_proxy():
     if parsed.scheme not in ("http", "https"):
         return jsonify({"error": "url must be http(s)"}), 400
     host = (parsed.hostname or "").lower()
-    if not any(host == s or host.endswith("." + s) for s in ALLOWED_COVER_HOST_SUFFIXES):
+    if not host:
+        return jsonify({"error": "invalid url"}), 400
+    if not _resolves_to_public_ip(host):
         return jsonify({"error": "host not allowed"}), 400
     try:
         upstream = requests.get(url, headers=HEADERS, timeout=15, stream=True)
@@ -293,9 +312,28 @@ def api_cover_proxy():
     except Exception as e:
         logger.warning(f"cover-proxy fetch failed ({url}): {e}")
         return jsonify({"error": "fetch failed"}), 502
-    content_type = upstream.headers.get("Content-Type", "image/jpeg")
+    content_type = (upstream.headers.get("Content-Type") or "").lower()
+    if not content_type.startswith("image/"):
+        logger.warning(f"cover-proxy rejected non-image content-type {content_type!r} from {url}")
+        upstream.close()
+        return jsonify({"error": "not an image"}), 415
+
+    def stream():
+        total = 0
+        try:
+            for chunk in upstream.iter_content(chunk_size=64 * 1024):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > COVER_MAX_BYTES:
+                    logger.warning(f"cover-proxy aborted at {total} bytes from {url}")
+                    break
+                yield chunk
+        finally:
+            upstream.close()
+
     return Response(
-        upstream.iter_content(chunk_size=64 * 1024),
+        stream(),
         content_type=content_type,
         headers={
             "Access-Control-Allow-Origin": "*",
