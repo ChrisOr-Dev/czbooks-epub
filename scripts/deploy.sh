@@ -6,6 +6,16 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+# Detect compose v2 plugin ("docker compose") or legacy v1 binary ("docker-compose")
+if docker compose version >/dev/null 2>&1; then
+  COMPOSE=(docker compose)
+elif command -v docker-compose >/dev/null 2>&1; then
+  COMPOSE=(docker-compose)
+else
+  echo "ERROR: neither 'docker compose' plugin nor 'docker-compose' binary found" >&2
+  exit 1
+fi
+
 cmd="${1:-help}"
 
 case "$cmd" in
@@ -13,28 +23,28 @@ case "$cmd" in
     echo "==> Pulling latest code"
     git pull origin main
     echo "==> Building image"
-    docker compose build --no-cache
+    "${COMPOSE[@]}" build --no-cache
     echo "==> Restarting container"
-    docker compose up -d
+    "${COMPOSE[@]}" up -d
     echo "==> Done. Tail logs with: $0 logs"
     ;;
   up)
-    docker compose up -d
+    "${COMPOSE[@]}" up -d
     ;;
   logs)
-    docker compose logs -f --tail=200
+    "${COMPOSE[@]}" logs -f --tail=200
     ;;
   restart)
-    docker compose restart
+    "${COMPOSE[@]}" restart
     ;;
   stop|down)
-    docker compose down
+    "${COMPOSE[@]}" down
     ;;
   ps|status)
-    docker compose ps
+    "${COMPOSE[@]}" ps
     ;;
   shell)
-    docker compose exec czbooks /bin/bash
+    "${COMPOSE[@]}" exec czbooks /bin/bash
     ;;
   *)
     cat <<EOF
