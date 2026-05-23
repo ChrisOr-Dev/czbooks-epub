@@ -159,7 +159,11 @@
         $("endCh").value = data.chapter_count;
         $("endCh").max = data.chapter_count;
         if (data.cover_url) {
-          $("coverImg").src = "/api/cover-proxy?url=" + encodeURIComponent(data.cover_url);
+          // <img> can load cross-origin images directly — no proxy needed
+          // for display. (The proxy is only used during EPUB build below
+          // because fetch() of these CDNs is blocked by CORS.)
+          $("coverImg").src = data.cover_url;
+          $("coverImg").referrerPolicy = "no-referrer";
           $("coverWrap").classList.remove("hidden");
         } else {
           $("coverWrap").classList.add("hidden");
