@@ -108,6 +108,29 @@
     const urlInput = $("url");
     let novel = null;
     let eventSource = null;
+    let wakeLock = null;
+
+    // -------------------------------------------------------------
+    // Wake Lock — keep mobile screen on while downloading
+    // -------------------------------------------------------------
+    async function acquireWakeLock() {
+      if (!("wakeLock" in navigator)) return;
+      try {
+        wakeLock = await navigator.wakeLock.request("screen");
+        wakeLock.addEventListener("release", () => { wakeLock = null; });
+      } catch (e) {
+        console.warn("wake lock failed:", e);
+      }
+    }
+    function releaseWakeLock() {
+      if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+    }
+    // Re-acquire if tab is hidden then shown again while a job is active
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && downloadBtn.disabled && !wakeLock) {
+        acquireWakeLock();
+      }
+    });
 
     // -------------------------------------------------------------
     // Step 1: parse
@@ -182,6 +205,7 @@
       $("progressText").textContent = `0 / ${end - start + 1}`;
       $("progressTitle").textContent = "";
       $("progressSection").classList.remove("hidden");
+      acquireWakeLock();
       try {
         const r = await fetch("/api/jobs", {
           method: "POST",
@@ -204,6 +228,7 @@
     function resetDownloadBtn() {
       downloadBtn.disabled = false;
       downloadBtn.textContent = "Download";
+      releaseWakeLock();
     }
 
     function showJobError(msg) {

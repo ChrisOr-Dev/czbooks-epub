@@ -97,6 +97,18 @@ def _parse_index_html(html: str, url: str) -> Optional[Novel]:
         seen.add(href)
         chapters.append(Chapter(title=a.get_text(strip=True), url=_normalize_url(href)))
 
+    # czbooks sometimes pins a "latest chapter" shortcut at the top of the
+    # chapter list (chapterNumber=0). When that shortcut's title chapter
+    # number is greater than the next entry's, it's misplaced — move it to
+    # the end so users see chapter 1 first.
+    if len(chapters) >= 2 and "chapterNumber=0" in chapters[0].url:
+        n0 = _title_chapter_num(chapters[0].title)
+        n1 = _title_chapter_num(chapters[1].title)
+        if n0 is not None and n1 is not None and n0 > n1:
+            shortcut = chapters.pop(0)
+            chapters.append(shortcut)
+            logger.info(f"moved latest-chapter shortcut to end: {shortcut.title!r}")
+
     cover_url = ""
     cover_img = soup.select_one(".thumbnail img, .novel-detail .thumbnail img, .book-cover img")
     if cover_img:
@@ -109,6 +121,13 @@ def _parse_index_html(html: str, url: str) -> Optional[Novel]:
 
 
 _BR_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
+_TITLE_CHAPTER_NUM_RE = re.compile(r"第\s*(\d+)\s*章")
+
+
+def _title_chapter_num(title: str) -> Optional[int]:
+    """Extract Arabic chapter number from a Chinese title like '第123章 ...'."""
+    m = _TITLE_CHAPTER_NUM_RE.search(title)
+    return int(m.group(1)) if m else None
 
 
 def _extract_content(html: str, url: str) -> str:
