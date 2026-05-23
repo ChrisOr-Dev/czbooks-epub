@@ -3,6 +3,8 @@
 Convert a [czbooks.net](https://czbooks.net/) novel's index page into an EPUB,
 either through a browser (web UI) or from the command line.
 
+> **Live demo:** [books.chiiapp.com](https://books.chiiapp.com) — public instance, rate-limited.
+
 - **Browser flow**: paste URL → pick chapter range → live progress → EPUB downloads.
   The EPUB is assembled in your browser (JSZip), so the server never stores files.
 - **CLI flow**: the original `main.py` still works for scripted use.
