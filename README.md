@@ -25,6 +25,10 @@ either through a browser (web UI) or from the command line.
 - **Job queue**: ThreadPoolExecutor, 4 concurrent jobs by default, extras queue.
 - **Rate limit**: Flask-Limiter, 5 jobs per IP per hour (configurable).
 - **Container-friendly**: 512 MB memory limit; idles around 50 MB.
+- **Mobile-aware**: requests a screen Wake Lock during the download so the
+  phone doesn't sleep mid-stream and drop the SSE connection.
+- **Robust ordering**: detects czbooks' "latest chapter" shortcut anchor and
+  moves it to the end so chapter 1 appears first, not a mid-book chapter.
 
 ## Quick start
 
