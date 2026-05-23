@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+*.epub
+.DS_Store
+data/
+
+# Private deployment notes (host names, paths, container topology)
+docs/DEPLOY.local.md
+docs/*.local.md

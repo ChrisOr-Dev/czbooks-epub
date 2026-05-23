@@ -2,6 +2,7 @@
 EPUB builder — converts Novel dataclass to .epub file using ebooklib.
 """
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Optional
@@ -37,8 +38,16 @@ def _chapter_to_html(chapter: Chapter, index: int) -> str:
 </html>"""
 
 
-def build_epub(novel: Novel, output_path: Optional[str] = None) -> str:
-    """Build EPUB from Novel and save to output_path. Returns final file path."""
+def build_epub(
+    novel: Novel,
+    output_path: Optional[str] = None,
+    output_dir: Optional[str] = None,
+) -> str:
+    """Build EPUB from Novel and save to disk. Returns final file path.
+
+    If output_path is given, it wins. Else builds a filename from the title and
+    drops it under output_dir (created if missing).
+    """
     book = epub.EpubBook()
     book.set_identifier(f"czbooks-{hash(novel.url) & 0xFFFFFF:06x}")
     book.set_title(novel.title)
@@ -81,7 +90,15 @@ p { text-indent: 2em; margin: 0.5em 0; }
 
     if output_path is None:
         safe_name = _sanitize_filename(novel.title) or "novel"
-        output_path = f"{safe_name}.epub"
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+            output_path = os.path.join(output_dir, f"{safe_name}.epub")
+        else:
+            output_path = f"{safe_name}.epub"
+    else:
+        parent = os.path.dirname(output_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
 
     epub.write_epub(output_path, book)
     logger.info(f"EPUB saved: {output_path}")

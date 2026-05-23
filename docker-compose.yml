@@ -1,0 +1,20 @@
+services:
+  czbooks:
+    build: .
+    container_name: czbooks_epub_web
+    restart: unless-stopped
+    ports:
+      - "5050:5050"
+    volumes:
+      - ./data/epubs:/tmp/epubs
+    environment:
+      - TZ=America/Toronto
+      - EPUBS_DIR=/tmp/epubs
+      - EPUB_TTL_SECONDS=86400
+      - MAX_CONCURRENT_JOBS=2
+      - PER_JOB_CONCURRENCY=10
+      - RATE_LIMIT=5 per hour
+    deploy:
+      resources:
+        limits:
+          memory: 512M

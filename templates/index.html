@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>czbooks → EPUB</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    html, body { background: #0f172a; }
+  </style>
+</head>
+<body class="min-h-screen text-slate-100 antialiased">
+  <main class="max-w-2xl mx-auto px-4 py-10">
+    <header class="mb-8">
+      <h1 class="text-3xl font-bold tracking-tight">czbooks → EPUB</h1>
+      <p class="mt-2 text-slate-400 text-sm">
+        貼上 czbooks.net 小說索引頁網址，挑章節範圍，下載 EPUB。檔案下載完會自動刪除。
+      </p>
+    </header>
+
+    <!-- Step 1: URL + Parse -->
+    <section class="bg-slate-800/60 border border-slate-700 rounded-lg p-5 mb-6">
+      <label for="url" class="block text-sm font-medium mb-2">小說索引頁網址</label>
+      <div class="flex gap-2">
+        <input id="url" type="url" placeholder="https://czbooks.net/n/..." value=""
+               class="flex-1 bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+        <button id="parseBtn"
+                class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded text-sm font-medium disabled:opacity-50">
+          解析
+        </button>
+      </div>
+      <p id="parseError" class="text-red-400 text-sm mt-2 hidden"></p>
+    </section>
+
+    <!-- Step 2: Novel info + range -->
+    <section id="novelSection" class="bg-slate-800/60 border border-slate-700 rounded-lg p-5 mb-6 hidden">
+      <h2 class="text-xl font-semibold" id="novelTitle"></h2>
+      <p class="text-slate-400 text-sm mt-1">
+        <span id="novelAuthor"></span>
+        <span class="mx-1">·</span>
+        共 <span id="novelTotal" class="font-mono"></span> 章
+      </p>
+
+      <div class="grid grid-cols-2 gap-3 mt-4">
+        <div>
+          <label for="startCh" class="block text-xs text-slate-400 mb-1">起始章節</label>
+          <input id="startCh" type="number" min="1" value="1"
+                 class="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm font-mono" />
+        </div>
+        <div>
+          <label for="endCh" class="block text-xs text-slate-400 mb-1">結束章節</label>
+          <input id="endCh" type="number" min="1" value="1"
+                 class="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm font-mono" />
+        </div>
+      </div>
+
+      <div class="flex gap-2 mt-3 flex-wrap">
+        <button class="quick px-3 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded" data-range="all">全部</button>
+        <button class="quick px-3 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded" data-range="50">前 50 章</button>
+        <button class="quick px-3 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded" data-range="100">前 100 章</button>
+        <button class="quick px-3 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded" data-range="500">前 500 章</button>
+      </div>
+
+      <div class="mt-4">
+        <label for="concurrency" class="block text-xs text-slate-400 mb-1">
+          並行度 <span id="concVal" class="font-mono">10</span>
+        </label>
+        <input id="concurrency" type="range" min="5" max="20" value="10"
+               class="w-full" />
+      </div>
+
+      <button id="downloadBtn"
+              class="mt-5 w-full bg-emerald-600 hover:bg-emerald-500 px-4 py-2 rounded text-sm font-medium disabled:opacity-50">
+        開始下載
+      </button>
+    </section>
+
+    <!-- Step 3: Progress -->
+    <section id="progressSection" class="bg-slate-800/60 border border-slate-700 rounded-lg p-5 mb-6 hidden">
+      <h3 class="text-sm font-medium text-slate-400 mb-2">下載進度</h3>
+      <div class="h-2 bg-slate-900 rounded overflow-hidden">
+        <div id="progressBar" class="h-full bg-indigo-500 transition-all" style="width: 0%"></div>
+      </div>
+      <p class="mt-2 text-xs text-slate-400 font-mono">
+        <span id="progressText">0 / 0</span> ·
+        <span id="progressTitle" class="text-slate-500"></span>
+      </p>
+      <p id="errorText" class="text-red-400 text-sm mt-3 hidden"></p>
+      <a id="downloadLink" class="hidden mt-3 inline-block bg-emerald-600 hover:bg-emerald-500 px-4 py-2 rounded text-sm font-medium" href="#">
+        下載 EPUB
+      </a>
+    </section>
+
+    <footer class="text-center text-xs text-slate-500 mt-12">
+      限速 5 個任務／小時（每 IP）。檔案下載一次即刪除。
+    </footer>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const parseBtn = $("parseBtn");
+    const downloadBtn = $("downloadBtn");
+    const urlInput = $("url");
+    let novel = null;
+    let eventSource = null;
+
+    parseBtn.addEventListener("click", async () => {
+      const url = urlInput.value.trim();
+      $("parseError").classList.add("hidden");
+      $("novelSection").classList.add("hidden");
+      $("progressSection").classList.add("hidden");
+      if (!url) return;
+      parseBtn.disabled = true; parseBtn.textContent = "解析中…";
+      try {
+        const r = await fetch("/api/parse", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({url}),
+        });
+        const data = await r.json();
+        if (!r.ok) { showParseError(data.error || "解析失敗"); return; }
+        novel = data;
+        $("novelTitle").textContent = "《" + data.title + "》";
+        $("novelAuthor").textContent = data.author;
+        $("novelTotal").textContent = data.chapter_count;
+        $("startCh").value = 1;
+        $("startCh").max = data.chapter_count;
+        $("endCh").value = data.chapter_count;
+        $("endCh").max = data.chapter_count;
+        $("novelSection").classList.remove("hidden");
+      } catch (e) {
+        showParseError(e.message);
+      } finally {
+        parseBtn.disabled = false; parseBtn.textContent = "解析";
+      }
+    });
+
+    function showParseError(msg) {
+      $("parseError").textContent = msg;
+      $("parseError").classList.remove("hidden");
+    }
+
+    document.querySelectorAll(".quick").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        if (!novel) return;
+        const r = btn.dataset.range;
+        $("startCh").value = 1;
+        $("endCh").value = r === "all" ? novel.chapter_count : Math.min(parseInt(r), novel.chapter_count);
+      });
+    });
+
+    $("concurrency").addEventListener("input", (e) => {
+      $("concVal").textContent = e.target.value;
+    });
+
+    downloadBtn.addEventListener("click", async () => {
+      if (!novel) return;
+      const start = parseInt($("startCh").value);
+      const end = parseInt($("endCh").value);
+      const concurrency = parseInt($("concurrency").value);
+      if (!(start >= 1 && end >= start)) { alert("章節範圍無效"); return; }
+      downloadBtn.disabled = true; downloadBtn.textContent = "排隊中…";
+      $("errorText").classList.add("hidden");
+      $("downloadLink").classList.add("hidden");
+      $("progressBar").style.width = "0%";
+      $("progressText").textContent = `0 / ${end - start + 1}`;
+      $("progressTitle").textContent = "";
+      $("progressSection").classList.remove("hidden");
+      try {
+        const r = await fetch("/api/jobs", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({url: novel.url, start, end, concurrency}),
+        });
+        const data = await r.json();
+        if (!r.ok) {
+          showJobError(data.error || `提交失敗 (${r.status})`);
+          resetDownloadBtn();
+          return;
+        }
+        subscribe(data.job_id);
+      } catch (e) {
+        showJobError(e.message);
+        resetDownloadBtn();
+      }
+    });
+
+    function resetDownloadBtn() {
+      downloadBtn.disabled = false;
+      downloadBtn.textContent = "開始下載";
+    }
+
+    function showJobError(msg) {
+      $("errorText").textContent = msg;
+      $("errorText").classList.remove("hidden");
+    }
+
+    function subscribe(jobId) {
+      if (eventSource) eventSource.close();
+      eventSource = new EventSource(`/api/jobs/${jobId}/events`);
+      eventSource.addEventListener("status", (e) => {
+        const d = JSON.parse(e.data);
+        if (d.status === "running") downloadBtn.textContent = "下載中…";
+        if (d.status === "queued")  downloadBtn.textContent = "排隊中…";
+      });
+      eventSource.addEventListener("novel", (e) => {
+        // could update novel info from server-confirmed range
+      });
+      eventSource.addEventListener("progress", (e) => {
+        const d = JSON.parse(e.data);
+        const pct = d.total ? Math.round(100 * d.done / d.total) : 0;
+        $("progressBar").style.width = pct + "%";
+        $("progressText").textContent = `${d.done} / ${d.total} (${pct}%)`;
+        $("progressTitle").textContent = d.title || "";
+      });
+      eventSource.addEventListener("done", (e) => {
+        const d = JSON.parse(e.data);
+        eventSource.close();
+        $("progressBar").style.width = "100%";
+        downloadBtn.textContent = "完成";
+        const link = $("downloadLink");
+        link.href = d.download_url;
+        link.setAttribute("download", d.filename || "novel.epub");
+        link.classList.remove("hidden");
+        // auto-trigger
+        link.click();
+        setTimeout(resetDownloadBtn, 1500);
+      });
+      eventSource.addEventListener("error", (e) => {
+        let msg = "下載發生錯誤";
+        try { const d = JSON.parse(e.data); if (d.message) msg = d.message; } catch {}
+        showJobError(msg);
+        eventSource.close();
+        resetDownloadBtn();
+      });
+    }
+  </script>
+</body>
+</html>

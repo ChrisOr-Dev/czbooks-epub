@@ -1,0 +1,12 @@
+.venv
+__pycache__
+*.pyc
+*.epub
+.git
+.gitignore
+.DS_Store
+data
+docs
+scripts
+README.md
+requirements-dev.txt
