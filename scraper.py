@@ -44,6 +44,7 @@ class Novel:
     title: str
     author: str
     url: str
+    cover_url: str = ""
     chapters: list = field(default_factory=list)  # list[Chapter]
 
 
@@ -96,8 +97,15 @@ def _parse_index_html(html: str, url: str) -> Optional[Novel]:
         seen.add(href)
         chapters.append(Chapter(title=a.get_text(strip=True), url=_normalize_url(href)))
 
-    logger.info(f"Found novel: 《{title}》 by {author}, {len(chapters)} chapters")
-    return Novel(title=title, author=author, url=url, chapters=chapters)
+    cover_url = ""
+    cover_img = soup.select_one(".thumbnail img, .novel-detail .thumbnail img, .book-cover img")
+    if cover_img:
+        src = cover_img.get("src", "")
+        if src and "default_no_thumbnail" not in src:
+            cover_url = _normalize_url(src)
+
+    logger.info(f"Found novel: 《{title}》 by {author}, {len(chapters)} chapters, cover={'yes' if cover_url else 'no'}")
+    return Novel(title=title, author=author, url=url, cover_url=cover_url, chapters=chapters)
 
 
 _BR_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)

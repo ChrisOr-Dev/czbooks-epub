@@ -6,16 +6,36 @@ import os
 import re
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
+import requests
 from ebooklib import epub
 
-from scraper import Novel, Chapter
+from scraper import HEADERS, Novel, Chapter
 
 logger = logging.getLogger(__name__)
 
 
 def _sanitize_filename(name: str) -> str:
     return re.sub(r'[\\/*?:"<>|]', "_", name).strip()
+
+
+def _fetch_cover(url: str) -> Optional[tuple[bytes, str, str]]:
+    """Download cover image. Returns (bytes, filename, media_type) or None."""
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=15)
+        resp.raise_for_status()
+    except Exception as e:
+        logger.warning(f"cover fetch failed ({url}): {e}")
+        return None
+    ext = os.path.splitext(urlparse(url).path)[1].lower().lstrip(".") or "jpg"
+    if ext not in ("jpg", "jpeg", "png", "webp", "gif"):
+        ext = "jpg"
+    media_type = {
+        "jpg": "image/jpeg", "jpeg": "image/jpeg",
+        "png": "image/png", "webp": "image/webp", "gif": "image/gif",
+    }[ext]
+    return resp.content, f"cover.{ext}", media_type
 
 
 def _chapter_to_html(chapter: Chapter, index: int) -> str:
@@ -53,6 +73,13 @@ def build_epub(
     book.set_title(novel.title)
     book.set_language("zh")
     book.add_author(novel.author)
+
+    if novel.cover_url:
+        cover = _fetch_cover(novel.cover_url)
+        if cover:
+            data, filename, _media = cover
+            book.set_cover(filename, data)
+            logger.info(f"cover added: {filename} ({len(data)} bytes)")
 
     # Style
     style = epub.EpubItem(
