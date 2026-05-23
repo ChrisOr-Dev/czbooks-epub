@@ -14,10 +14,8 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY scraper.py epub_builder.py cleanup.py app.py main.py ./
+COPY scraper.py epub_builder.py app.py main.py ./
 COPY templates ./templates
-
-RUN mkdir -p /tmp/epubs
 
 EXPOSE 5050
 

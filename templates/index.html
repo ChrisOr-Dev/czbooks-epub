@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>czbooks → EPUB</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <style>
     html, body { background: #0f172a; }
   </style>
@@ -14,7 +15,7 @@
     <header class="mb-8">
       <h1 class="text-3xl font-bold tracking-tight">czbooks → EPUB</h1>
       <p class="mt-2 text-slate-400 text-sm">
-        貼上 czbooks.net 小說索引頁網址，挑章節範圍，下載 EPUB。檔案下載完會自動刪除。
+        貼上 czbooks.net 小說索引頁網址，挑章節範圍，下載 EPUB。EPUB 在你的瀏覽器組裝，伺服器只負責抓內文。
       </p>
     </header>
 
@@ -34,12 +35,19 @@
 
     <!-- Step 2: Novel info + range -->
     <section id="novelSection" class="bg-slate-800/60 border border-slate-700 rounded-lg p-5 mb-6 hidden">
-      <h2 class="text-xl font-semibold" id="novelTitle"></h2>
-      <p class="text-slate-400 text-sm mt-1">
-        <span id="novelAuthor"></span>
-        <span class="mx-1">·</span>
-        共 <span id="novelTotal" class="font-mono"></span> 章
-      </p>
+      <div class="flex gap-4">
+        <div id="coverWrap" class="flex-shrink-0 hidden">
+          <img id="coverImg" alt="cover" class="w-24 h-32 object-cover rounded border border-slate-700 bg-slate-900" />
+        </div>
+        <div class="flex-1 min-w-0">
+          <h2 class="text-xl font-semibold truncate" id="novelTitle"></h2>
+          <p class="text-slate-400 text-sm mt-1">
+            <span id="novelAuthor"></span>
+            <span class="mx-1">·</span>
+            共 <span id="novelTotal" class="font-mono"></span> 章
+          </p>
+        </div>
+      </div>
 
       <div class="grid grid-cols-2 gap-3 mt-4">
         <div>
@@ -65,8 +73,7 @@
         <label for="concurrency" class="block text-xs text-slate-400 mb-1">
           並行度 <span id="concVal" class="font-mono">10</span>
         </label>
-        <input id="concurrency" type="range" min="5" max="20" value="10"
-               class="w-full" />
+        <input id="concurrency" type="range" min="5" max="20" value="10" class="w-full" />
       </div>
 
       <button id="downloadBtn"
@@ -77,22 +84,19 @@
 
     <!-- Step 3: Progress -->
     <section id="progressSection" class="bg-slate-800/60 border border-slate-700 rounded-lg p-5 mb-6 hidden">
-      <h3 class="text-sm font-medium text-slate-400 mb-2">下載進度</h3>
+      <h3 class="text-sm font-medium text-slate-400 mb-2">進度</h3>
       <div class="h-2 bg-slate-900 rounded overflow-hidden">
         <div id="progressBar" class="h-full bg-indigo-500 transition-all" style="width: 0%"></div>
       </div>
       <p class="mt-2 text-xs text-slate-400 font-mono">
-        <span id="progressText">0 / 0</span> ·
-        <span id="progressTitle" class="text-slate-500"></span>
+        <span id="progressText">0 / 0</span>
+        <span id="progressTitle" class="ml-2 text-slate-500"></span>
       </p>
       <p id="errorText" class="text-red-400 text-sm mt-3 hidden"></p>
-      <a id="downloadLink" class="hidden mt-3 inline-block bg-emerald-600 hover:bg-emerald-500 px-4 py-2 rounded text-sm font-medium" href="#">
-        下載 EPUB
-      </a>
     </section>
 
     <footer class="text-center text-xs text-slate-500 mt-12">
-      限速 5 個任務／小時（每 IP）。檔案下載一次即刪除。
+      限速 5 個任務／小時（每 IP）。EPUB 在瀏覽器組裝，不留檔於伺服器。
     </footer>
   </main>
 
@@ -104,6 +108,9 @@
     let novel = null;
     let eventSource = null;
 
+    // -------------------------------------------------------------
+    // Step 1: parse
+    // -------------------------------------------------------------
     parseBtn.addEventListener("click", async () => {
       const url = urlInput.value.trim();
       $("parseError").classList.add("hidden");
@@ -127,6 +134,12 @@
         $("startCh").max = data.chapter_count;
         $("endCh").value = data.chapter_count;
         $("endCh").max = data.chapter_count;
+        if (data.cover_url) {
+          $("coverImg").src = "/api/cover-proxy?url=" + encodeURIComponent(data.cover_url);
+          $("coverWrap").classList.remove("hidden");
+        } else {
+          $("coverWrap").classList.add("hidden");
+        }
         $("novelSection").classList.remove("hidden");
       } catch (e) {
         showParseError(e.message);
@@ -153,6 +166,9 @@
       $("concVal").textContent = e.target.value;
     });
 
+    // -------------------------------------------------------------
+    // Step 2: submit job, stream chapters, build EPUB in browser
+    // -------------------------------------------------------------
     downloadBtn.addEventListener("click", async () => {
       if (!novel) return;
       const start = parseInt($("startCh").value);
@@ -161,7 +177,6 @@
       if (!(start >= 1 && end >= start)) { alert("章節範圍無效"); return; }
       downloadBtn.disabled = true; downloadBtn.textContent = "排隊中…";
       $("errorText").classList.add("hidden");
-      $("downloadLink").classList.add("hidden");
       $("progressBar").style.width = "0%";
       $("progressText").textContent = `0 / ${end - start + 1}`;
       $("progressTitle").textContent = "";
@@ -197,34 +212,43 @@
 
     function subscribe(jobId) {
       if (eventSource) eventSource.close();
+      const chapters = new Map();   // idx -> {title, content}
+      let novelMeta = null;
       eventSource = new EventSource(`/api/jobs/${jobId}/events`);
+
       eventSource.addEventListener("status", (e) => {
         const d = JSON.parse(e.data);
         if (d.status === "running") downloadBtn.textContent = "下載中…";
         if (d.status === "queued")  downloadBtn.textContent = "排隊中…";
       });
       eventSource.addEventListener("novel", (e) => {
-        // could update novel info from server-confirmed range
+        novelMeta = JSON.parse(e.data);
+      });
+      eventSource.addEventListener("chapter", (e) => {
+        const d = JSON.parse(e.data);
+        chapters.set(d.idx, {title: d.title, content: d.content});
       });
       eventSource.addEventListener("progress", (e) => {
         const d = JSON.parse(e.data);
         const pct = d.total ? Math.round(100 * d.done / d.total) : 0;
         $("progressBar").style.width = pct + "%";
         $("progressText").textContent = `${d.done} / ${d.total} (${pct}%)`;
-        $("progressTitle").textContent = d.title || "";
+        $("progressTitle").textContent = (d.title || "").slice(0, 40);
       });
-      eventSource.addEventListener("done", (e) => {
-        const d = JSON.parse(e.data);
+      eventSource.addEventListener("done", async (e) => {
         eventSource.close();
-        $("progressBar").style.width = "100%";
-        downloadBtn.textContent = "完成";
-        const link = $("downloadLink");
-        link.href = d.download_url;
-        link.setAttribute("download", d.filename || "novel.epub");
-        link.classList.remove("hidden");
-        // auto-trigger
-        link.click();
-        setTimeout(resetDownloadBtn, 1500);
+        const summary = JSON.parse(e.data);
+        downloadBtn.textContent = "組裝 EPUB…";
+        try {
+          const blob = await buildEpub(novelMeta || novel, chapters);
+          triggerBlobDownload(blob, (novelMeta?.title || novel.title) + ".epub");
+          downloadBtn.textContent = "完成";
+        } catch (err) {
+          console.error(err);
+          showJobError("EPUB 組裝失敗：" + err.message);
+        } finally {
+          setTimeout(resetDownloadBtn, 1500);
+        }
       });
       eventSource.addEventListener("error", (e) => {
         let msg = "下載發生錯誤";
@@ -232,6 +256,204 @@
         showJobError(msg);
         eventSource.close();
         resetDownloadBtn();
+      });
+    }
+
+    function triggerBlobDownload(blob, filename) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    // -------------------------------------------------------------
+    // EPUB builder (JSZip)
+    // -------------------------------------------------------------
+    function xmlEscape(s) {
+      return String(s).replace(/[&<>"']/g, (c) => ({
+        "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&apos;"
+      }[c]));
+    }
+
+    function chapterXhtml(title, content) {
+      const paras = content.split(/\n+/).map(p => p.trim()).filter(Boolean)
+        .map(p => `    <p>${xmlEscape(p)}</p>`).join("\n");
+      return `<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="zh">
+<head>
+  <title>${xmlEscape(title)}</title>
+  <link rel="stylesheet" type="text/css" href="style.css"/>
+</head>
+<body>
+  <h2>${xmlEscape(title)}</h2>
+${paras}
+</body>
+</html>`;
+    }
+
+    function navXhtml(chapters) {
+      const items = chapters.map(c =>
+        `    <li><a href="chapter_${String(c.epubIdx).padStart(4, "0")}.xhtml">${xmlEscape(c.title)}</a></li>`
+      ).join("\n");
+      return `<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="zh">
+<head><title>目錄</title></head>
+<body>
+<nav epub:type="toc" id="toc">
+  <h1>目錄</h1>
+  <ol>
+${items}
+  </ol>
+</nav>
+</body>
+</html>`;
+    }
+
+    function tocNcx(uid, title, chapters) {
+      const navPoints = chapters.map((c, i) =>
+        `    <navPoint id="nav${c.epubIdx}" playOrder="${i+1}">
+      <navLabel><text>${xmlEscape(c.title)}</text></navLabel>
+      <content src="chapter_${String(c.epubIdx).padStart(4, "0")}.xhtml"/>
+    </navPoint>`
+      ).join("\n");
+      return `<?xml version="1.0" encoding="utf-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+  <head>
+    <meta name="dtb:uid" content="${xmlEscape(uid)}"/>
+  </head>
+  <docTitle><text>${xmlEscape(title)}</text></docTitle>
+  <navMap>
+${navPoints}
+  </navMap>
+</ncx>`;
+    }
+
+    function contentOpf(uid, novelMeta, chapters, coverExt) {
+      const modified = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+      const manifestItems = [
+        '    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>',
+        '    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>',
+        '    <item id="css" href="style.css" media-type="text/css"/>',
+      ];
+      const spineItems = [];
+      if (coverExt) {
+        const coverMime = coverExt === "png" ? "image/png"
+                        : coverExt === "webp" ? "image/webp"
+                        : coverExt === "gif" ? "image/gif"
+                        : "image/jpeg";
+        manifestItems.push(`    <item id="cover-image" href="cover.${coverExt}" media-type="${coverMime}" properties="cover-image"/>`);
+        manifestItems.push('    <item id="cover" href="cover.xhtml" media-type="application/xhtml+xml"/>');
+        spineItems.push('    <itemref idref="cover" linear="no"/>');
+      }
+      spineItems.push('    <itemref idref="nav" linear="no"/>');
+      chapters.forEach((c) => {
+        const idx = String(c.epubIdx).padStart(4, "0");
+        manifestItems.push(`    <item id="ch${c.epubIdx}" href="chapter_${idx}.xhtml" media-type="application/xhtml+xml"/>`);
+        spineItems.push(`    <itemref idref="ch${c.epubIdx}"/>`);
+      });
+      return `<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid" xml:lang="zh">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
+    <dc:identifier id="bookid">${xmlEscape(uid)}</dc:identifier>
+    <dc:title>${xmlEscape(novelMeta.title)}</dc:title>
+    <dc:creator>${xmlEscape(novelMeta.author || "Unknown")}</dc:creator>
+    <dc:language>zh</dc:language>
+    <meta property="dcterms:modified">${modified}</meta>
+${coverExt ? '    <meta name="cover" content="cover-image"/>' : ''}
+  </metadata>
+  <manifest>
+${manifestItems.join("\n")}
+  </manifest>
+  <spine toc="ncx">
+${spineItems.join("\n")}
+  </spine>
+</package>`;
+    }
+
+    function coverXhtml(coverExt) {
+      return `<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="zh">
+<head>
+<title>Cover</title>
+<style>html,body{margin:0;padding:0;height:100%;}body{display:flex;align-items:center;justify-content:center;background:#fff;}img{max-width:100%;max-height:100vh;}</style>
+</head>
+<body><img src="cover.${coverExt}" alt="Cover"/></body>
+</html>`;
+    }
+
+    async function buildEpub(novelMeta, chaptersMap) {
+      // Sort chapters by idx, assign sequential epubIdx
+      const chapters = Array.from(chaptersMap.entries())
+        .sort((a, b) => a[0] - b[0])
+        .map(([idx, ch], i) => ({...ch, sourceIdx: idx, epubIdx: i + 1}));
+
+      const uid = "czbooks-" + (novelMeta.url || "").split("/").pop() + "-" + Date.now();
+      const zip = new JSZip();
+
+      // 1. mimetype FIRST and uncompressed (EPUB spec)
+      zip.file("mimetype", "application/epub+zip", { compression: "STORE" });
+
+      // 2. META-INF
+      zip.file("META-INF/container.xml",
+        `<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>`);
+
+      // 3. Cover (optional)
+      let coverExt = null;
+      if (novelMeta.cover_url) {
+        try {
+          const r = await fetch("/api/cover-proxy?url=" + encodeURIComponent(novelMeta.cover_url));
+          if (r.ok) {
+            const blob = await r.blob();
+            const ct = (blob.type || "image/jpeg").toLowerCase();
+            coverExt = ct.includes("png") ? "png"
+                     : ct.includes("webp") ? "webp"
+                     : ct.includes("gif") ? "gif"
+                     : "jpg";
+            const buf = await blob.arrayBuffer();
+            zip.file(`OEBPS/cover.${coverExt}`, buf);
+            zip.file("OEBPS/cover.xhtml", coverXhtml(coverExt));
+          }
+        } catch (e) {
+          console.warn("cover fetch failed", e);
+        }
+      }
+
+      // 4. CSS
+      zip.file("OEBPS/style.css",
+        `body { font-family: serif; line-height: 1.8; margin: 2em; }
+h2 { font-size: 1.4em; margin-bottom: 1em; }
+p { text-indent: 2em; margin: 0.5em 0; }`);
+
+      // 5. Chapters
+      for (const c of chapters) {
+        const name = `OEBPS/chapter_${String(c.epubIdx).padStart(4, "0")}.xhtml`;
+        zip.file(name, chapterXhtml(c.title, c.content));
+      }
+
+      // 6. Nav + NCX
+      zip.file("OEBPS/nav.xhtml", navXhtml(chapters));
+      zip.file("OEBPS/toc.ncx", tocNcx(uid, novelMeta.title, chapters));
+
+      // 7. OPF (last so we know what we included)
+      zip.file("OEBPS/content.opf", contentOpf(uid, novelMeta, chapters, coverExt));
+
+      return zip.generateAsync({
+        type: "blob",
+        mimeType: "application/epub+zip",
+        compression: "DEFLATE",
+        compressionOptions: { level: 6 },
       });
     }
   </script>
