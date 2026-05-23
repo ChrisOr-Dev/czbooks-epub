@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-Hant">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -15,19 +15,20 @@
     <header class="mb-8">
       <h1 class="text-3xl font-bold tracking-tight">czbooks → EPUB</h1>
       <p class="mt-2 text-slate-400 text-sm">
-        貼上 czbooks.net 小說索引頁網址，挑章節範圍，下載 EPUB。EPUB 在你的瀏覽器組裝，伺服器只負責抓內文。
+        Paste a czbooks.net novel index URL, pick a chapter range, get an EPUB.
+        The file is assembled in your browser — the server only fetches text.
       </p>
     </header>
 
     <!-- Step 1: URL + Parse -->
     <section class="bg-slate-800/60 border border-slate-700 rounded-lg p-5 mb-6">
-      <label for="url" class="block text-sm font-medium mb-2">小說索引頁網址</label>
+      <label for="url" class="block text-sm font-medium mb-2">Novel index URL</label>
       <div class="flex gap-2">
         <input id="url" type="url" placeholder="https://czbooks.net/n/..." value=""
                class="flex-1 bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
         <button id="parseBtn"
                 class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded text-sm font-medium disabled:opacity-50">
-          解析
+          Parse
         </button>
       </div>
       <p id="parseError" class="text-red-400 text-sm mt-2 hidden"></p>
@@ -44,47 +45,47 @@
           <p class="text-slate-400 text-sm mt-1">
             <span id="novelAuthor"></span>
             <span class="mx-1">·</span>
-            共 <span id="novelTotal" class="font-mono"></span> 章
+            <span id="novelTotal" class="font-mono"></span> chapters
           </p>
         </div>
       </div>
 
       <div class="grid grid-cols-2 gap-3 mt-4">
         <div>
-          <label for="startCh" class="block text-xs text-slate-400 mb-1">起始章節</label>
+          <label for="startCh" class="block text-xs text-slate-400 mb-1">Start chapter</label>
           <input id="startCh" type="number" min="1" value="1"
                  class="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm font-mono" />
         </div>
         <div>
-          <label for="endCh" class="block text-xs text-slate-400 mb-1">結束章節</label>
+          <label for="endCh" class="block text-xs text-slate-400 mb-1">End chapter</label>
           <input id="endCh" type="number" min="1" value="1"
                  class="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm font-mono" />
         </div>
       </div>
 
       <div class="flex gap-2 mt-3 flex-wrap">
-        <button class="quick px-3 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded" data-range="all">全部</button>
-        <button class="quick px-3 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded" data-range="50">前 50 章</button>
-        <button class="quick px-3 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded" data-range="100">前 100 章</button>
-        <button class="quick px-3 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded" data-range="500">前 500 章</button>
+        <button class="quick px-3 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded" data-range="all">All</button>
+        <button class="quick px-3 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded" data-range="50">First 50</button>
+        <button class="quick px-3 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded" data-range="100">First 100</button>
+        <button class="quick px-3 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded" data-range="500">First 500</button>
       </div>
 
       <div class="mt-4">
         <label for="concurrency" class="block text-xs text-slate-400 mb-1">
-          並行度 <span id="concVal" class="font-mono">10</span>
+          Concurrency <span id="concVal" class="font-mono">10</span>
         </label>
         <input id="concurrency" type="range" min="5" max="20" value="10" class="w-full" />
       </div>
 
       <button id="downloadBtn"
               class="mt-5 w-full bg-emerald-600 hover:bg-emerald-500 px-4 py-2 rounded text-sm font-medium disabled:opacity-50">
-        開始下載
+        Download
       </button>
     </section>
 
     <!-- Step 3: Progress -->
     <section id="progressSection" class="bg-slate-800/60 border border-slate-700 rounded-lg p-5 mb-6 hidden">
-      <h3 class="text-sm font-medium text-slate-400 mb-2">進度</h3>
+      <h3 class="text-sm font-medium text-slate-400 mb-2">Progress</h3>
       <div class="h-2 bg-slate-900 rounded overflow-hidden">
         <div id="progressBar" class="h-full bg-indigo-500 transition-all" style="width: 0%"></div>
       </div>
@@ -96,7 +97,7 @@
     </section>
 
     <footer class="text-center text-xs text-slate-500 mt-12">
-      限速 5 個任務／小時（每 IP）。EPUB 在瀏覽器組裝，不留檔於伺服器。
+      Rate limit: 5 jobs / hour per IP. EPUB is built in your browser — nothing is stored on the server.
     </footer>
   </main>
 
@@ -117,7 +118,7 @@
       $("novelSection").classList.add("hidden");
       $("progressSection").classList.add("hidden");
       if (!url) return;
-      parseBtn.disabled = true; parseBtn.textContent = "解析中…";
+      parseBtn.disabled = true; parseBtn.textContent = "Parsing…";
       try {
         const r = await fetch("/api/parse", {
           method: "POST",
@@ -125,9 +126,9 @@
           body: JSON.stringify({url}),
         });
         const data = await r.json();
-        if (!r.ok) { showParseError(data.error || "解析失敗"); return; }
+        if (!r.ok) { showParseError(data.error || "Parse failed"); return; }
         novel = data;
-        $("novelTitle").textContent = "《" + data.title + "》";
+        $("novelTitle").textContent = data.title;
         $("novelAuthor").textContent = data.author;
         $("novelTotal").textContent = data.chapter_count;
         $("startCh").value = 1;
@@ -144,7 +145,7 @@
       } catch (e) {
         showParseError(e.message);
       } finally {
-        parseBtn.disabled = false; parseBtn.textContent = "解析";
+        parseBtn.disabled = false; parseBtn.textContent = "Parse";
       }
     });
 
@@ -174,8 +175,8 @@
       const start = parseInt($("startCh").value);
       const end = parseInt($("endCh").value);
       const concurrency = parseInt($("concurrency").value);
-      if (!(start >= 1 && end >= start)) { alert("章節範圍無效"); return; }
-      downloadBtn.disabled = true; downloadBtn.textContent = "排隊中…";
+      if (!(start >= 1 && end >= start)) { alert("Invalid chapter range"); return; }
+      downloadBtn.disabled = true; downloadBtn.textContent = "Queued…";
       $("errorText").classList.add("hidden");
       $("progressBar").style.width = "0%";
       $("progressText").textContent = `0 / ${end - start + 1}`;
@@ -189,7 +190,7 @@
         });
         const data = await r.json();
         if (!r.ok) {
-          showJobError(data.error || `提交失敗 (${r.status})`);
+          showJobError(data.error || `Submit failed (${r.status})`);
           resetDownloadBtn();
           return;
         }
@@ -202,7 +203,7 @@
 
     function resetDownloadBtn() {
       downloadBtn.disabled = false;
-      downloadBtn.textContent = "開始下載";
+      downloadBtn.textContent = "Download";
     }
 
     function showJobError(msg) {
@@ -218,8 +219,8 @@
 
       eventSource.addEventListener("status", (e) => {
         const d = JSON.parse(e.data);
-        if (d.status === "running") downloadBtn.textContent = "下載中…";
-        if (d.status === "queued")  downloadBtn.textContent = "排隊中…";
+        if (d.status === "running") downloadBtn.textContent = "Downloading…";
+        if (d.status === "queued")  downloadBtn.textContent = "Queued…";
       });
       eventSource.addEventListener("novel", (e) => {
         novelMeta = JSON.parse(e.data);
@@ -237,21 +238,20 @@
       });
       eventSource.addEventListener("done", async (e) => {
         eventSource.close();
-        const summary = JSON.parse(e.data);
-        downloadBtn.textContent = "組裝 EPUB…";
+        downloadBtn.textContent = "Building EPUB…";
         try {
           const blob = await buildEpub(novelMeta || novel, chapters);
           triggerBlobDownload(blob, (novelMeta?.title || novel.title) + ".epub");
-          downloadBtn.textContent = "完成";
+          downloadBtn.textContent = "Done";
         } catch (err) {
           console.error(err);
-          showJobError("EPUB 組裝失敗：" + err.message);
+          showJobError("EPUB build failed: " + err.message);
         } finally {
           setTimeout(resetDownloadBtn, 1500);
         }
       });
       eventSource.addEventListener("error", (e) => {
-        let msg = "下載發生錯誤";
+        let msg = "Download error";
         try { const d = JSON.parse(e.data); if (d.message) msg = d.message; } catch {}
         showJobError(msg);
         eventSource.close();
@@ -303,10 +303,10 @@ ${paras}
       return `<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="zh">
-<head><title>目錄</title></head>
+<head><title>Table of Contents</title></head>
 <body>
 <nav epub:type="toc" id="toc">
-  <h1>目錄</h1>
+  <h1>Table of Contents</h1>
   <ol>
 ${items}
   </ol>
@@ -389,7 +389,7 @@ ${spineItems.join("\n")}
     }
 
     async function buildEpub(novelMeta, chaptersMap) {
-      // Sort chapters by idx, assign sequential epubIdx
+      // Sort chapters by source idx, assign sequential epubIdx
       const chapters = Array.from(chaptersMap.entries())
         .sort((a, b) => a[0] - b[0])
         .map(([idx, ch], i) => ({...ch, sourceIdx: idx, epubIdx: i + 1}));
@@ -446,7 +446,7 @@ p { text-indent: 2em; margin: 0.5em 0; }`);
       zip.file("OEBPS/nav.xhtml", navXhtml(chapters));
       zip.file("OEBPS/toc.ncx", tocNcx(uid, novelMeta.title, chapters));
 
-      // 7. OPF (last so we know what we included)
+      // 7. OPF
       zip.file("OEBPS/content.opf", contentOpf(uid, novelMeta, chapters, coverExt));
 
       return zip.generateAsync({

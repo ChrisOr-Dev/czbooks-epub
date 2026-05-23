@@ -1,21 +1,28 @@
 # czbooks_epub
 
-把 [czbooks.net](https://czbooks.net/) 的小說索引頁轉成 EPUB 的網頁服務 / CLI 工具。
+Convert a [czbooks.net](https://czbooks.net/) novel's index page into an EPUB,
+either through a browser (web UI) or from the command line.
 
-- 瀏覽器界面：貼 URL → 選章節範圍 → 即時進度條 → 下載 EPUB
-- 同樣的程式碼可當 CLI 跑：`python main.py <url>`
-- 預設純 `requests` 抓章節，無 Playwright；Docker image 約 200MB
-- 多用戶、IP rate limit、檔案下載完自動刪除
+- **Browser flow**: paste URL → pick chapter range → live progress → EPUB downloads.
+  The EPUB is assembled in your browser (JSZip), so the server never stores files.
+- **CLI flow**: the original `main.py` still works for scripted use.
+- Requests-based scraper; no Playwright required for the happy path.
+  Docker image is about 200 MB.
+- Multi-user friendly: IP-based rate limit, ephemeral in-memory job queue.
 
 ## Features
 
-- **Fast path：** `requests` + `ThreadPoolExecutor`（預設 10 平行），500 章書約 30 秒
-- **Fallback：** Playwright async（dev image 才裝）保留為 JS-rendered 反爬保險
-- **Web UI：** Flask + SSE 即時進度，原生 JS + TailwindCSS
-- **任務佇列：** ThreadPoolExecutor、預設同時 2 個任務，超過排隊
-- **自動清理：** 下載即刪 + 24h TTL 背景掃除 + 啟動時清掃
-- **Rate limit：** Flask-Limiter，每 IP 每小時 5 個任務（可調）
-- **資源友善：** Docker 預設 512M memory limit，能跑在低階 ARM 主機
+- **Fast scraper**: `requests` + `ThreadPoolExecutor` (default 10 parallel).
+  A 500-chapter book finishes in roughly 30 seconds.
+- **Client-side EPUB build**: the server streams chapter content over SSE and
+  the browser assembles a valid EPUB 3 (cover, nav, NCX) with JSZip. No
+  server-side EPUB storage, no cleanup job, no download endpoint to harden.
+- **Playwright fallback**: kept in the dev image to handle a hypothetical
+  future where czbooks goes JS-rendered. Production image ships without it.
+- **Web UI**: Flask + SSE progress, plain JS + TailwindCSS, dark theme.
+- **Job queue**: ThreadPoolExecutor, 4 concurrent jobs by default, extras queue.
+- **Rate limit**: Flask-Limiter, 5 jobs per IP per hour (configurable).
+- **Container-friendly**: 512 MB memory limit; idles around 50 MB.
 
 ## Quick start
 
@@ -25,72 +32,80 @@
 python -m venv .venv
 .venv/bin/pip install -r requirements.txt
 .venv/bin/python app.py
-# 開 http://localhost:5050
+# Open http://localhost:5050
 ```
 
 ### Docker
 
 ```bash
 docker compose up --build
-# 開 http://localhost:5050
+# Open http://localhost:5050
 ```
 
-### CLI (legacy)
+### CLI
 
 ```bash
 python main.py https://czbooks.net/n/xxxxx --chapters 1-50 -o novel.epub
-python main.py https://czbooks.net/n/xxxxx --test       # 只解析索引
+python main.py https://czbooks.net/n/xxxxx --test       # parse index only
 ```
 
 ## Configuration
 
-環境變數（皆有預設值）：
+Environment variables (all optional):
 
-| 變數 | 預設 | 說明 |
+| Variable | Default | Description |
 |---|---|---|
-| `EPUBS_DIR` | `/tmp/epubs` | EPUB 暫存目錄 |
-| `EPUB_TTL_SECONDS` | `86400` | 未下載檔案保留多久 |
-| `MAX_CONCURRENT_JOBS` | `2` | 同時跑幾個下載任務 |
-| `PER_JOB_CONCURRENCY` | `10` | 每個任務的章節平行抓取數 |
-| `RATE_LIMIT` | `5 per hour` | `/api/jobs` IP rate limit |
-| `TZ` | `America/Toronto` | 時區 |
+| `MAX_CONCURRENT_JOBS` | `4` | Number of scrape jobs that may run in parallel |
+| `PER_JOB_CONCURRENCY` | `10` | Chapter-level threads inside a single job |
+| `RATE_LIMIT` | `5 per hour` | Limit applied to `POST /api/jobs` per client IP |
+| `TZ` | `America/Toronto` | Container timezone |
 
-## API
+## HTTP API
 
-| Method | Path | 用途 |
+| Method | Path | Description |
 |---|---|---|
 | `GET`  | `/` | Web UI |
-| `POST` | `/api/parse` | 解析索引頁 |
-| `POST` | `/api/jobs` | 建立下載任務 |
-| `GET`  | `/api/jobs/<id>/events` | SSE 進度 |
-| `GET`  | `/api/jobs/<id>/download` | 下載 EPUB（下載後立即刪除） |
-| `GET`  | `/healthz` | 健康檢查 |
+| `POST` | `/api/parse` | Parse index page; returns title, author, cover URL, chapter list |
+| `GET`  | `/api/cover-proxy?url=...` | Fetch a czbooks cover image with CORS headers |
+| `POST` | `/api/jobs` | Submit a download job; returns `job_id` |
+| `GET`  | `/api/jobs/<id>/events` | SSE stream: `status` / `novel` / `chapter` / `progress` / `done` / `error` |
+| `GET`  | `/healthz` | Health probe |
+
+The browser is expected to subscribe to `/events` before the first chapter
+arrives (the events are not replayed for late subscribers).
 
 ## Architecture
 
-完整設計見 [docs/DESIGN.md](docs/DESIGN.md)。
+See [docs/DESIGN.md](docs/DESIGN.md) for the full design.
 
 ```
 Browser ──HTTPS──► reverse proxy / tunnel ──► host:5050 ─► Flask app
-                                                            ├─ Job queue (2 concurrent)
+                                                            ├─ Job queue (ThreadPoolExecutor)
                                                             ├─ Scraper (requests + threads)
-                                                            └─ /tmp/epubs/*.epub (auto-cleanup)
+                                                            └─ SSE chapter stream
+                                                              ▲
+                                                              │ chapter events
+Browser ──── JSZip → EPUB blob ──── download ───────────────┘
 ```
 
 ## Deployment
 
-預設 `docker-compose.yml` 用 bridge network、port 5050、512M memory limit，能直接 `docker compose up -d` 跑。外網建議加反向代理 / tunnel（Cloudflare Tunnel、Nginx、Caddy 都可），路由到 `http://localhost:5050`。
+`docker-compose.yml` uses a bridge network on port 5050 with a 512 MB memory
+limit. Put a reverse proxy (Cloudflare Tunnel, Nginx, Caddy, Traefik, etc.)
+in front of `http://localhost:5050` for HTTPS.
 
 ```bash
-./scripts/deploy.sh deploy    # git pull + 重建 + 啟動
-./scripts/deploy.sh logs      # 看 logs
-./scripts/deploy.sh restart   # 重啟
-./scripts/deploy.sh stop      # 停止
+./scripts/deploy.sh deploy    # git pull, rebuild, restart
+./scripts/deploy.sh logs      # follow logs
+./scripts/deploy.sh restart   # restart container
+./scripts/deploy.sh stop      # docker compose down
 ```
 
 ## Disclaimer
 
-本工具僅供個人離線閱讀使用。請尊重原作者版權，勿散布或商業利用所下載的內容。網站結構變更時 scraper 可能失效，需配合更新。
+This tool is for personal offline reading. Please respect the original
+authors' copyright — do not redistribute or commercialize the downloaded
+content. The scraper may need updates if the source site changes structure.
 
 ## License
 
